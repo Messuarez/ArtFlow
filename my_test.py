@@ -8,25 +8,49 @@ from os.path import basename
 from os.path import splitext
 from torchvision import transforms
 from torchvision.utils import save_image
+from torchvision.models.detection.mask_rcnn import maskrcnn_resnet50_fpn
 from pathlib import Path
-
+import cv2
 
 import time
 import numpy as np
 import random
 
+import matplotlib.pyplot as plt
+
+import torchvision.transforms.functional as transF
+
+plt.rcParams["savefig.bbox"] = 'tight'
+
+
+def show(imgs):
+    if not isinstance(imgs, list):
+        imgs = [imgs]
+    fig, axs = plt.subplots(ncols=len(imgs), squeeze=False)
+    for i, img in enumerate(imgs):
+        img = img.detach()
+        img = transF.to_pil_image(img)
+        axs[0, i].imshow(np.asarray(img))
+        axs[0, i].set(xticklabels=[], yticklabels=[], xticks=[], yticks=[])
+
+
+def visualize_masks(out):
+    masks = out[0]['masks']
+    mask0 = masks[0][0]
+    show(mask0)
+
 
 def test_transform(img, size):
     transform_list = []
     h, w, _ = np.shape(img)
-    if h<w:
+    if h < w:
         newh = size
-        neww = w/h*size
+        neww = w / h * size
     else:
         neww = size
-        newh = h/w*size
-    neww = int(neww//4*4)
-    newh = int(newh//4*4)
+        newh = h / w * size
+    neww = int(neww // 4 * 4)
+    newh = int(newh // 4 * 4)
     transform_list.append(transforms.Resize((newh, neww)))
     transform_list.append(transforms.ToTensor())
     transform = transforms.Compose(transform_list)
@@ -35,14 +59,14 @@ def test_transform(img, size):
 
 parser = argparse.ArgumentParser()
 # Basic options
-# parser.add_argument('--content', type=str, default='input/content/golden_gate.jpg',
-#                     help='File path to the content image')
+parser.add_argument('--content', type=str, default='input/content/golden_gate.jpg',
+                    help='File path to the content image')
 parser.add_argument('--content_dir', type=str, default='input/content',
                     help='Directory path to a batch of content images')
-# parser.add_argument('--style', type=str, default='input/style/la_muse.jpg',
-#                     help='File path to the style image, or multiple style \
-#                     images separated by commas if you want to do style \
-#                     interpolation or spatial control')
+parser.add_argument('--style', type=str, default='input/style/la_muse.jpg',
+                    help='File path to the style image, or multiple style \
+                    images separated by commas if you want to do style \
+                    interpolation or spatial control')
 parser.add_argument('--style_dir', type=str, default='input/style',
                     help='Directory path to a batch of style images')
 parser.add_argument('--decoder', type=str, default='experiments/decoder2.pth.tar')
@@ -61,8 +85,8 @@ parser.add_argument('--output', type=str, default='output',
 # glow parameters
 parser.add_argument('--operator', type=str, default='adain',
                     help='style feature transfer operator')
-parser.add_argument('--n_flow', default=8, type=int, help='number of flows in each block')# 32
-parser.add_argument('--n_block', default=2, type=int, help='number of blocks')# 4
+parser.add_argument('--n_flow', default=8, type=int, help='number of flows in each block')  # 32
+parser.add_argument('--n_block', default=2, type=int, help='number of blocks')  # 4
 parser.add_argument('--no_lu', action='store_true', help='use plain convolution instead of LU decomposed version')
 parser.add_argument('--affine', default=False, type=bool, help='use affine coupling instead of additive')
 
@@ -77,13 +101,13 @@ elif args.operator == 'adain':
 elif args.operator == 'decorator':
     from glow_decorator import Glow
 else:
-    raise('Not implemented operator', args.operator)
+    raise ('Not implemented operator', args.operator)
 
 output_dir = Path(args.output)
 output_dir.mkdir(exist_ok=True, parents=True)
 
-assert args.content_dir
-assert args.style_dir
+assert (args.content or args.content_dir)
+assert (args.style or args.style_dir)
 
 content_dir = Path(args.content_dir)
 content_paths = [f for f in content_dir.glob('*')]
@@ -103,24 +127,40 @@ if os.path.isfile(args.decoder):
 else:
     print("--------no checkpoint found---------")
 glow = glow.to(device)
-
 glow.eval()
 
+mask_rcnn = maskrcnn_resnet50_fpn(pretrained=True)
+mask_rcnn.eval()
+
 # -----------------------start------------------------
+
+
 for content_path in content_paths:
     for style_path in style_paths:
         with torch.no_grad():
             content = Image.open(str(content_path)).convert('RGB')
             img_transform = test_transform(content, args.size)
             content = img_transform(content)
-            content = content.to(device).unsqueeze(0)
-            
+            # content = content.to(device).unsqueeze(0)
+
+            # idea 2
+
+            out = mask_rcnn([content])
+            visualize_masks(out)
+            masks = out[0]['masks']
+            n_mask = int(masks.size()[0])
+            foreground_mask = torch.zeros(masks.size()[1:3], dtype=bool)
+            for i in range(n_mask):
+                masks[i] = (masks[i] >= 0.5)
+                foreground_mask = foreground_mask or masks[i]
+
+
             style = Image.open(str(style_path)).convert('RGB')
             img_transform = test_transform(style, args.size)
             style = img_transform(style)
             style = style.to(device).unsqueeze(0)
 
-            # content/style ---> z ---> stylized 
+            # content/style ---> z ---> stylized
             z_c = glow(content, forward=True)
             z_s = glow(style, forward=True)
             output = glow(z_c, forward=False, style=z_s)
@@ -130,4 +170,3 @@ for content_path in content_paths:
             content_path.stem, style_path.stem, args.save_ext)
         print(output_name)
         save_image(output, str(output_name))
-            

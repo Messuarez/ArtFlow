@@ -108,7 +108,6 @@ class ActNorm(nn.Module):
         if self.initialized.item() == 0:
             self.initialize(input)
             self.initialized.fill_(1)
-            
         return self.scale * (input + self.loc)
 
     def reverse(self, output):
