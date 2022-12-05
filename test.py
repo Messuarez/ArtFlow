@@ -130,4 +130,6 @@ for content_path in content_paths:
             content_path.stem, style_path.stem, args.save_ext)
         print(output_name)
         save_image(output, str(output_name))
+
+        print("style info:", z_s.shape, z_s.mean())
             
